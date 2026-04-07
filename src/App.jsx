@@ -174,6 +174,160 @@ export default function App() {
 
     if (!me) return <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", color: C.creamD }}>Carregando...</div>;
 
+    // Jeitinho panel state
+    const [showJ, setShowJ] = useState(false);
+    const myJeitinhos = me.jeitinhos || [];
+
+    const canUseGrampo = game.phase === "decision" && (game.participants || []).includes(pid) && !(game.decisions || {})[pid];
+    const canUseDelacao = game.phase === "result" && game.roundResult?.type === "traitor" && game.roundResult.tid !== pid && (game.participants || []).includes(pid) && (game.decisions || {})[pid] === "cumprir" && !game.usedDelacao;
+    const canUseFalcatrua = game.phase === "decision" && (game.participants || []).includes(pid) && !(game.decisions || {})[pid];
+    const canUseSindicato = game.phase === "reveal" && !isBoss;
+    const canUseLaranja = game.phase === "invite" && !(game.participants || []).includes(pid);
+    const canUsePropina = game.phase === "decision" && (game.participants || []).includes(pid) && !(game.decisions || {})[pid];
+
+    const canUse = (card) => {
+      if (card.id === "grampo") return canUseGrampo;
+      if (card.id === "delacao") return canUseDelacao;
+      if (card.id === "falcatrua") return canUseFalcatrua;
+      if (card.id === "sindicato") return canUseSindicato;
+      if (card.id === "laranja") return canUseLaranja;
+      if (card.id === "propina") return canUsePropina;
+      return false;
+    };
+
+    const useJeitinho = async (card) => {
+      const g = { ...game };
+      const mi = g.players.findIndex(p => p.id === pid);
+
+      if (card.id === "grampo") {
+        // Pick a random other participant to spy on
+        const others = (g.participants || []).filter(id => id !== pid && (g.decisions || {})[id]);
+        if (others.length > 0) {
+          const targetId = others[Math.floor(Math.random() * others.length)];
+          const targetPlayer = g.players.find(p => p.id === targetId);
+          const targetDec = g.decisions[targetId];
+          alert(`🔍 GRAMPO: ${targetPlayer.name} vai ${targetDec === "trair" ? "TRAIR ✗" : "CUMPRIR ✓"}!`);
+        } else {
+          // No one decided yet, let them pick who to spy
+          const otherParts = (g.participants || []).filter(id => id !== pid);
+          if (otherParts.length === 1) {
+            g.grampoTarget = otherParts[0];
+            g.grampoUser = pid;
+          } else {
+            // For simplicity, spy on first other participant
+            g.grampoTarget = otherParts[0];
+            g.grampoUser = pid;
+          }
+          alert(`🔍 GRAMPO ativado! Quando ${g.players.find(p => p.id === g.grampoTarget)?.name} decidir, você verá a decisão.`);
+        }
+      }
+
+      if (card.id === "delacao") {
+        const traitorId = g.roundResult.tid;
+        const ti = g.players.findIndex(p => p.id === traitorId);
+        const penalty = g.chosenScheme.faithfulPenalty;
+        // Recover what was lost
+        g.players[mi].money += penalty;
+        // Take R$2 from traitor
+        const take = Math.min(2, g.players[ti].money);
+        g.players[ti].money -= take;
+        g.players[mi].money += take;
+        g.usedDelacao = true;
+        alert(`⚖️ DELAÇÃO PREMIADA! Você recuperou R$${penalty} e tirou R$${take} de ${g.players[ti].name}!`);
+      }
+
+      if (card.id === "falcatrua") {
+        // Place both decisions — will resolve after reveal
+        g.decisions[pid] = "falcatrua";
+        g.falcatruaUser = pid;
+        alert("🃏 FALCATRUA ativada! Após a revelação, você escolherá Cumprir ou Trair.");
+      }
+
+      if (card.id === "sindicato") {
+        if (g.chosenScheme) {
+          g.chosenScheme.players = Math.min(3, g.chosenScheme.players + 1);
+          alert(`👷 SINDICATO! O esquema agora exige ${g.chosenScheme.players} participantes!`);
+        } else {
+          alert("👷 SINDICATO! O próximo esquema escolhido vai exigir +1 participante.");
+          g.sindicatoActive = true;
+        }
+      }
+
+      if (card.id === "laranja") {
+        g.participants = [...(g.participants || []), pid];
+        g.splits[pid] = 1;
+        alert("🍊 LARANJA! Você entrou no esquema! Recebe no mínimo R$1.");
+      }
+
+      if (card.id === "propina") {
+        if (me.money >= 2) {
+          g.players[mi].money -= 2;
+          const others = (g.participants || []).filter(id => id !== pid);
+          if (others.length > 0) {
+            const targetId = others[0];
+            const targetPlayer = g.players.find(p => p.id === targetId);
+            const targetTi = g.players.findIndex(p => p.id === targetId);
+            g.players[targetTi].money += 2;
+            const dec = (g.decisions || {})[targetId];
+            if (dec) {
+              alert(`💰 PROPINA! Você pagou R$2 para ${targetPlayer.name}. Decisão dele: ${dec === "trair" ? "TRAIR ✗" : "CUMPRIR ✓"}. (Ele pode trocar pagando R$1)`);
+            } else {
+              alert(`💰 PROPINA! Você pagou R$2 para ${targetPlayer.name}. Ele ainda não decidiu — quando decidir, a decisão será visível pra você.`);
+              g.propinaTarget = targetId;
+              g.propinaUser = pid;
+            }
+          }
+        } else {
+          alert("Você não tem R$2 pra pagar a propina!");
+          return;
+        }
+      }
+
+      // Remove used card from player's hand
+      const cardIdx = g.players[mi].jeitinhos.findIndex(j => j.uid === card.uid);
+      if (cardIdx !== -1) g.players[mi].jeitinhos.splice(cardIdx, 1);
+
+      await save(g);
+      setShowJ(false);
+    };
+
+    const JeitinhoPanel = () => {
+      if (!showJ) return null;
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 100, display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+          onClick={() => setShowJ(false)}>
+          <div style={{ background: C.bg2, borderRadius: "16px 16px 0 0", width: "100%", maxWidth: 500, maxHeight: "70vh", overflow: "auto", padding: "16px 16px 30px" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <h3 style={{ fontFamily: "'Passion One'", fontSize: 20, color: C.green }}>Seus Jeitinhos ({myJeitinhos.length})</h3>
+              <button onClick={() => setShowJ(false)} style={{ ...btn, padding: "6px 12px", background: "transparent", color: C.creamD, fontSize: 20, border: "none", minHeight: 36 }}>✕</button>
+            </div>
+            {myJeitinhos.length === 0 && <p style={{ color: C.creamD, fontSize: 14 }}>Você não tem cartas de Jeitinho. Ganhe uma sendo traído!</p>}
+            {myJeitinhos.map((card, i) => {
+              const usable = canUse(card);
+              return (
+                <div key={card.uid || i} style={{ background: usable ? "rgba(74,222,128,.08)" : "rgba(255,255,255,.03)", border: `1px solid ${usable ? "rgba(74,222,128,.25)" : C.brd}`, borderRadius: 10, padding: 12, marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <div style={{ fontFamily: "'Lilita One'", fontSize: 15, color: usable ? C.green : C.cream }}>{card.name}</div>
+                      <div style={{ fontSize: 12, color: C.creamD, marginTop: 2 }}>{card.desc}</div>
+                    </div>
+                    {usable && (
+                      <button onClick={() => useJeitinho(card)}
+                        style={{ ...btn, padding: "8px 16px", background: C.green, color: C.bg, fontSize: 13, marginLeft: 10, minHeight: 36, whiteSpace: "nowrap" }}>
+                        Usar
+                      </button>
+                    )}
+                  </div>
+                  {!usable && <div style={{ fontSize: 11, color: "rgba(240,234,214,.3)", marginTop: 4 }}>Não pode usar agora</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    };
+
     const Header = () => (
       <div style={{ background: C.bg3, padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${C.brd}` }}>
         <div>
@@ -182,7 +336,10 @@ export default function App() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontFamily: "'Passion One'", color: C.green, fontSize: 20 }}>R${me.money}</span>
-          {me.jeitinhos?.length > 0 && <span style={{ background: C.greenDim, color: C.green, fontSize: 11, padding: "2px 6px", borderRadius: 4, fontWeight: 700 }}>{me.jeitinhos.length}J</span>}
+          <button onClick={() => setShowJ(true)}
+            style={{ ...btn, padding: "4px 10px", minHeight: 32, background: myJeitinhos.length > 0 ? C.greenDim : "rgba(255,255,255,.04)", color: myJeitinhos.length > 0 ? C.green : C.creamD, border: `1px solid ${myJeitinhos.length > 0 ? "rgba(74,222,128,.3)" : C.brd}`, fontSize: 12, borderRadius: 6 }}>
+            🃏 {myJeitinhos.length}
+          </button>
         </div>
       </div>
     );
@@ -224,6 +381,8 @@ export default function App() {
       return (
         <div style={{ minHeight: "100vh", background: C.bg, color: C.cream }}>
           <Header />
+          <JeitinhoPanel />
+          <JeitinhoPanel />
           <div style={{ padding: 20, maxWidth: 500, margin: "0 auto" }}>
             <div style={{ textAlign: "center", marginBottom: 20 }}>
               <p style={{ color: C.creamD, fontSize: 13 }}>Patrão da rodada</p>
@@ -260,6 +419,7 @@ export default function App() {
       return (
         <div style={{ minHeight: "100vh", background: C.bg, color: C.cream }}>
           <Header />
+          <JeitinhoPanel />
           <div style={{ padding: 20, maxWidth: 400, margin: "0 auto", textAlign: "center" }}>
             <p style={{ fontFamily: "'Lilita One'", fontSize: 20, color: C.gold }}>{boss.name} fez solo</p>
             <SchemeCard s={scheme} />
@@ -281,6 +441,7 @@ export default function App() {
         return (
           <div style={{ minHeight: "100vh", background: C.bg, color: C.cream }}>
             <Header />
+          <JeitinhoPanel />
             <div style={{ padding: 20, maxWidth: 500, margin: "0 auto" }}>
               <SchemeCard s={scheme} />
               <p style={{ fontWeight: 700, fontSize: 14, marginTop: 16, marginBottom: 10 }}>Convide {needed - 1} jogador{needed > 2 ? "es" : ""} e defina a divisão:</p>
@@ -338,6 +499,7 @@ export default function App() {
       return (
         <div style={{ minHeight: "100vh", background: C.bg, color: C.cream }}>
           <Header />
+          <JeitinhoPanel />
           <div style={{ padding: 20, maxWidth: 400, margin: "0 auto", textAlign: "center" }}>
             <p style={{ fontFamily: "'Lilita One'", fontSize: 20, color: C.gold }}>{boss.name} está montando o time</p>
             <SchemeCard s={scheme} />
@@ -361,6 +523,7 @@ export default function App() {
         return (
           <div style={{ minHeight: "100vh", background: C.bg, color: C.cream }}>
             <Header />
+          <JeitinhoPanel />
             <div style={{ padding: 20, maxWidth: 400, margin: "0 auto", textAlign: "center" }}>
               <p style={{ fontFamily: "'Lilita One'", fontSize: 20, color: C.gold }}>{boss.name} te convidou!</p>
               <SchemeCard s={scheme} />
@@ -383,6 +546,7 @@ export default function App() {
       return (
         <div style={{ minHeight: "100vh", background: C.bg, color: C.cream }}>
           <Header />
+          <JeitinhoPanel />
           <div style={{ padding: 20, maxWidth: 400, margin: "0 auto", textAlign: "center" }}>
             <p style={{ color: C.gold, fontFamily: "'Lilita One'", fontSize: 18 }}>Proposta enviada</p>
             <div style={{ marginTop: 16 }}>
@@ -440,6 +604,7 @@ export default function App() {
         return (
           <div style={{ minHeight: "100vh", background: C.bg, color: C.cream }}>
             <Header />
+          <JeitinhoPanel />
             <div style={{ padding: 20, maxWidth: 400, margin: "0 auto", textAlign: "center" }}>
               <p style={{ fontFamily: "'Lilita One'", fontSize: 22 }}>Hora da decisão</p>
               <p style={{ color: C.creamD, fontSize: 14, margin: "8px 0 20px" }}>Sua parte combinada: R${(game.splits || {})[pid]}. O que você vai fazer?</p>
@@ -461,6 +626,7 @@ export default function App() {
       return (
         <div style={{ minHeight: "100vh", background: C.bg, color: C.cream }}>
           <Header />
+          <JeitinhoPanel />
           <div style={{ padding: 20, maxWidth: 400, margin: "0 auto", textAlign: "center" }}>
             <p style={{ fontFamily: "'Lilita One'", fontSize: 20, color: C.gold }}>Decisão secreta</p>
             <p style={{ color: C.creamD, fontSize: 14, marginTop: 10 }}>{isPart ? "Você já decidiu. Aguardando os outros..." : "Os participantes estão decidindo..."}</p>
@@ -483,6 +649,7 @@ export default function App() {
       return (
         <div style={{ minHeight: "100vh", background: C.bg, color: C.cream }}>
           <Header />
+          <JeitinhoPanel />
           <div style={{ padding: 20, maxWidth: 500, margin: "0 auto", textAlign: "center" }}>
             {r?.type === "cooperated" && <>
               <p style={{ fontFamily: "'Lilita One'", fontSize: 22, color: C.green }}>Todo mundo cumpriu!</p>
